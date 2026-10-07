@@ -1,0 +1,13 @@
+{
+  "sysroot": "/home/yasse/.rustup/toolchains/stable-x86_64-unknown-linux-gnu",
+  "crates": [
+    {
+      "root_module": "kernel.rs",
+      "edition": "2024",
+      "deps": [],
+      "target": "riscv32imac-unknown-none-elf",
+      "is_workspace_member": true,
+      "cfg": []
+    }
+  ]
+}
