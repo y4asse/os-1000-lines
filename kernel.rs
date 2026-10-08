@@ -8,7 +8,15 @@ use core::panic::PanicInfo;
 #[unsafe(link_section = ".text.boot")]
 #[unsafe(naked)]
 pub extern "C" fn boot() -> ! {
-    naked_asm!("j boot");
+    naked_asm!(
+        "la sp, __stack_top",
+        "j kernel_main",
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kernel_main() -> ! {
+    loop {}
 }
 
 #[panic_handler]
