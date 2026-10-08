@@ -3,6 +3,12 @@
 
 use core::arch::naked_asm;
 use core::panic::PanicInfo;
+use core::ptr;
+
+unsafe extern "C" {
+    static mut __bss: u8;
+    static mut __bss_end: u8;
+}
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
@@ -16,6 +22,12 @@ pub extern "C" fn boot() -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
+    unsafe {
+        let start = &raw mut __bss;
+        let end = &raw mut __bss_end;
+        ptr::write_bytes(start, 0, end.addr() - start.addr());
+    }
+
     loop {}
 }
 
