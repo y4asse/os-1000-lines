@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+#[macro_use]
+mod common;
+
 use core::arch::{asm, naked_asm};
 use core::panic::PanicInfo;
 use core::ptr;
@@ -65,10 +68,8 @@ extern "C" fn kernel_main() -> ! {
         ptr::write_bytes(start, 0, end.addr() - start.addr());
     }
 
-    let s = b"\n\nHello World!\n";
-    for &ch in s {
-        putchar(ch);
-    }
+    printf!("\n\nHello {}\n", "World!");
+    printf!("1 + 2 = {}, {:x}\n", 1 + 2, 0x1234abcd);
 
     loop {
         unsafe { asm!("wfi") };
