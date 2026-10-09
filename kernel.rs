@@ -65,7 +65,10 @@ extern "C" fn kernel_main() -> ! {
         ptr::write_bytes(start, 0, end.addr() - start.addr());
     }
 
-    putchar(b'A');
+    let s = b"\n\nHello World!\n";
+    for &ch in s {
+        putchar(ch);
+    }
 
     loop {
         unsafe { asm!("wfi") };
