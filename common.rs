@@ -20,3 +20,14 @@ macro_rules! printf {
         $crate::common::print_fmt(format_args!($($arg)*))
     };
 }
+
+pub type PAddr = usize;
+pub type VAddr = usize;
+
+pub fn align_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+pub fn is_aligned(value: usize, align: usize) -> bool {
+    value & (align - 1) == 0
+}

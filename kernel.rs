@@ -71,6 +71,9 @@ extern "C" fn kernel_main() -> ! {
     printf!("\n\nHello {}\n", "World!");
     printf!("1 + 2 = {}, {:x}\n", 1 + 2, 0x1234abcd);
 
+    printf!("align_up(0x1234, 0x1000) = {:x}\n", common::align_up(0x1234, 0x1000));
+    printf!("is_aligned(0x2000, 0x1000) = {}\n", common::is_aligned(0x2000, 0x1000));
+
     loop {
         unsafe { asm!("wfi") };
     }
