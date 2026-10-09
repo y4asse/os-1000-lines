@@ -68,18 +68,15 @@ extern "C" fn kernel_main() -> ! {
         ptr::write_bytes(start, 0, end.addr() - start.addr());
     }
 
-    printf!("\n\nHello {}\n", "World!");
-    printf!("1 + 2 = {}, {:x}\n", 1 + 2, 0x1234abcd);
-
-    printf!("align_up(0x1234, 0x1000) = {:x}\n", common::align_up(0x1234, 0x1000));
-    printf!("is_aligned(0x2000, 0x1000) = {}\n", common::is_aligned(0x2000, 0x1000));
-
-    loop {
-        unsafe { asm!("wfi") };
-    }
+    panic!("booted!");
+    printf!("unreachable here!\n");
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    match info.location() {
+        Some(loc) => printf!("PANIC: {}:{}: {}\n", loc.file(), loc.line(), info.message()),
+        None => printf!("PANIC: {}\n", info.message()),
+    }
     loop {}
 }
