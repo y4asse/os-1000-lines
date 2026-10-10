@@ -1,0 +1,12 @@
+{
+  "crates": [
+    {
+      "root_module": "kernel.rs",
+      "edition": "2024",
+      "deps": [],
+      "cfg": [],
+      "target": "riscv32imac-unknown-none-elf",
+      "is_workspace_member": true
+    }
+  ]
+}
