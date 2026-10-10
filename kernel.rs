@@ -22,10 +22,32 @@ macro_rules! write_csr {
 use core::arch::{asm, global_asm, naked_asm};
 use core::panic::PanicInfo;
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use common::{PAGE_SIZE, PAddr};
 
 unsafe extern "C" {
     static mut __bss: u8;
     static mut __bss_end: u8;
+    static mut __free_ram: u8;
+    static mut __free_ram_end: u8;
+}
+
+static NEXT_OFFSET: AtomicUsize = AtomicUsize::new(0);
+
+fn alloc_pages(n: usize) -> PAddr {
+    let size = n * PAGE_SIZE;
+    let offset = NEXT_OFFSET.fetch_add(size, Ordering::Relaxed);
+    unsafe {
+        let start = (&raw mut __free_ram).addr();
+        let end = (&raw mut __free_ram_end).addr();
+        let paddr = start + offset;
+        if paddr + size > end {
+            panic!("out of memory");
+        }
+        ptr::write_bytes(paddr as *mut u8, 0, size);
+        paddr
+    }
 }
 
 struct SbiRet {
@@ -206,9 +228,13 @@ extern "C" fn kernel_main() -> ! {
     }
 
     write_csr!("stvec", (kernel_entry as *const ()).addr());
-    unsafe { asm!("unimp") };
 
-    panic!("unreachable here!");
+    let paddr0 = alloc_pages(2);
+    let paddr1 = alloc_pages(1);
+    printf!("alloc_pages test: paddr0={:x}\n", paddr0);
+    printf!("alloc_pages test: paddr1={:x}\n", paddr1);
+
+    panic!("booted!");
 }
 
 #[panic_handler]
