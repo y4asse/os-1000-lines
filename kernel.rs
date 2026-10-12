@@ -126,7 +126,7 @@ global_asm!(
     ".balign 4",
     ".global kernel_entry",
     "kernel_entry:",
-    "csrw sscratch, sp",
+    "csrrw sp, sscratch, sp",
     "addi sp, sp, -4 * 31",
     "sw ra,  4 * 0(sp)",
     "sw gp,  4 * 1(sp)",
@@ -160,6 +160,8 @@ global_asm!(
     "sw s11, 4 * 29(sp)",
     "csrr a0, sscratch",
     "sw a0, 4 * 30(sp)",
+    "addi a0, sp, 4 * 31",
+    "csrw sscratch, a0",
     "mv a0, sp",
     "call handle_trap",
     "lw ra,  4 * 0(sp)",
@@ -328,6 +330,9 @@ fn yield_now() {
     if next == current {
         return;
     }
+
+    let stack_top = unsafe { (&raw mut PROCS[next].stack).cast::<u8>().add(KERNEL_STACK_SIZE) };
+    write_csr!("sscratch", stack_top.addr());
 
     CURRENT_PROC.store(next, Ordering::Relaxed);
     unsafe { switch_context(proc_sp(current), proc_sp(next)) };
