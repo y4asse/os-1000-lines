@@ -311,16 +311,33 @@ fn delay() {
     }
 }
 
-static PROC_A: AtomicUsize = AtomicUsize::new(0);
-static PROC_B: AtomicUsize = AtomicUsize::new(0);
+static CURRENT_PROC: AtomicUsize = AtomicUsize::new(0);
+static IDLE_PROC: AtomicUsize = AtomicUsize::new(0);
+
+fn yield_now() {
+    let current = CURRENT_PROC.load(Ordering::Relaxed);
+    let next = unsafe {
+        let procs = &raw const PROCS;
+        let current_pid = (*procs)[current].pid;
+        (0..PROCS_MAX)
+            .map(|i| (current_pid + i) % PROCS_MAX)
+            .find(|&i| (*procs)[i].state == ProcState::Runnable && (*procs)[i].pid > 0)
+            .unwrap_or(IDLE_PROC.load(Ordering::Relaxed))
+    };
+
+    if next == current {
+        return;
+    }
+
+    CURRENT_PROC.store(next, Ordering::Relaxed);
+    unsafe { switch_context(proc_sp(current), proc_sp(next)) };
+}
 
 extern "C" fn proc_a_entry() -> ! {
     printf!("starting process A\n");
     loop {
         putchar(b'A');
-        let a = PROC_A.load(Ordering::Relaxed);
-        let b = PROC_B.load(Ordering::Relaxed);
-        unsafe { switch_context(proc_sp(a), proc_sp(b)) };
+        yield_now();
         delay();
     }
 }
@@ -329,9 +346,7 @@ extern "C" fn proc_b_entry() -> ! {
     printf!("starting process B\n");
     loop {
         putchar(b'B');
-        let a = PROC_A.load(Ordering::Relaxed);
-        let b = PROC_B.load(Ordering::Relaxed);
-        unsafe { switch_context(proc_sp(b), proc_sp(a)) };
+        yield_now();
         delay();
     }
 }
@@ -356,9 +371,16 @@ extern "C" fn kernel_main() -> ! {
 
     write_csr!("stvec", (kernel_entry as *const ()).addr());
 
-    PROC_A.store(create_process((proc_a_entry as *const ()).addr()), Ordering::Relaxed);
-    PROC_B.store(create_process((proc_b_entry as *const ()).addr()), Ordering::Relaxed);
-    proc_a_entry();
+    let idle = create_process(0);
+    unsafe { PROCS[idle].pid = 0 };
+    IDLE_PROC.store(idle, Ordering::Relaxed);
+    CURRENT_PROC.store(idle, Ordering::Relaxed);
+
+    create_process((proc_a_entry as *const ()).addr());
+    create_process((proc_b_entry as *const ()).addr());
+
+    yield_now();
+    panic!("switched to idle process");
 }
 
 #[panic_handler]
