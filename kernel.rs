@@ -24,9 +24,10 @@ use core::panic::PanicInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{PAGE_SIZE, PAddr, VAddr};
+use common::{PAGE_SIZE, PAddr, VAddr, is_aligned};
 
 unsafe extern "C" {
+    static mut __kernel_base: u8;
     static mut __bss: u8;
     static mut __bss_end: u8;
     static mut __free_ram: u8;
@@ -227,6 +228,7 @@ struct Process {
     pid: usize,
     state: ProcState,
     sp: VAddr,
+    page_table: PAddr,
     stack: KernelStack,
 }
 
@@ -236,6 +238,7 @@ impl Process {
             pid: 0,
             state: ProcState::Unused,
             sp: 0,
+            page_table: 0,
             stack: KernelStack([0; KERNEL_STACK_SIZE]),
         }
     }
@@ -280,6 +283,35 @@ unsafe extern "C" fn switch_context(prev_sp: *mut VAddr, next_sp: *const VAddr) 
     );
 }
 
+const SATP_SV32: usize = 1 << 31;
+const PAGE_V: u32 = 1 << 0; // 有効化ビット
+const PAGE_R: u32 = 1 << 1; // 読み込み可能
+const PAGE_W: u32 = 1 << 2; // 書き込み可能
+const PAGE_X: u32 = 1 << 3; // 実行可能
+const PAGE_U: u32 = 1 << 4; // ユーザーモードでアクセス可能
+
+unsafe fn map_page(table1: PAddr, vaddr: VAddr, paddr: PAddr, flags: u32) {
+    if !is_aligned(vaddr, PAGE_SIZE) {
+        panic!("unaligned vaddr {:x}", vaddr);
+    }
+    if !is_aligned(paddr, PAGE_SIZE) {
+        panic!("unaligned paddr {:x}", paddr);
+    }
+
+    let table1 = table1 as *mut u32;
+    let vpn1 = (vaddr >> 22) & 0x3ff; // 上位10ビット（VPN[1]）を取得する。0x3ffは10ビットのマスク
+    unsafe {
+        if *table1.add(vpn1) & PAGE_V == 0 {
+            let pt_paddr = alloc_pages(1);
+            *table1.add(vpn1) = ((pt_paddr / PAGE_SIZE) << 10) as u32 | PAGE_V;
+        }
+
+        let vpn0 = (vaddr >> 12) & 0x3ff;
+        let table0 = ((*table1.add(vpn1) >> 10) as usize * PAGE_SIZE) as *mut u32;
+        *table0.add(vpn0) = ((paddr / PAGE_SIZE) << 10) as u32 | flags | PAGE_V;
+    }
+}
+
 fn create_process(pc: usize) -> usize {
     unsafe {
         let procs = &raw mut PROCS;
@@ -296,9 +328,17 @@ fn create_process(pc: usize) -> usize {
         sp = sp.sub(1);
         *sp = pc as u32;
 
+        let page_table = alloc_pages(1);
+        let kernel_base = (&raw mut __kernel_base).addr();
+        let free_ram_end = (&raw mut __free_ram_end).addr();
+        for paddr in (kernel_base..free_ram_end).step_by(PAGE_SIZE) {
+            map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+        }
+
         proc.pid = i + 1;
         proc.state = ProcState::Runnable;
         proc.sp = sp.addr();
+        proc.page_table = page_table;
         i
     }
 }
@@ -330,6 +370,16 @@ fn yield_now() {
     if next == current {
         return;
     }
+
+    let satp = SATP_SV32 | unsafe { PROCS[next].page_table } / PAGE_SIZE;
+    unsafe { 
+        asm!(
+            "sfence.vma", // TLBの同期
+            "csrw satp, {}", // satp レジスタに
+            "sfence.vma", // TLBの同期
+            in(reg) satp
+        )
+    };
 
     let stack_top = unsafe { (&raw mut PROCS[next].stack).cast::<u8>().add(KERNEL_STACK_SIZE) };
     write_csr!("sscratch", stack_top.addr());
