@@ -27,6 +27,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use common::{PAGE_SIZE, PAddr, VAddr, is_aligned};
 
 unsafe extern "C" {
+    static _binary_shell_bin_start: u8;
+    static _binary_shell_bin_size: u8;
     static mut __kernel_base: u8;
     static mut __bss: u8;
     static mut __bss_end: u8;
@@ -312,7 +314,13 @@ unsafe fn map_page(table1: PAddr, vaddr: VAddr, paddr: PAddr, flags: u32) {
     }
 }
 
-fn create_process(pc: usize) -> usize {
+const USER_BASE: VAddr = 0x1000000;
+
+extern "C" fn user_entry() -> ! {
+    panic!("not yet implemented");
+}
+
+fn create_process(image: &[u8]) -> usize {
     unsafe {
         let procs = &raw mut PROCS;
         let Some(i) = (0..PROCS_MAX).find(|&i| (*procs)[i].state == ProcState::Unused) else {
@@ -326,13 +334,19 @@ fn create_process(pc: usize) -> usize {
             *sp = 0;
         }
         sp = sp.sub(1);
-        *sp = pc as u32;
+        *sp = (user_entry as *const ()).addr() as u32;
 
         let page_table = alloc_pages(1);
         let kernel_base = (&raw mut __kernel_base).addr();
         let free_ram_end = (&raw mut __free_ram_end).addr();
         for paddr in (kernel_base..free_ram_end).step_by(PAGE_SIZE) {
             map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+        }
+
+        for (i, chunk) in image.chunks(PAGE_SIZE).enumerate() {
+            let page = alloc_pages(1);
+            ptr::copy_nonoverlapping(chunk.as_ptr(), page as *mut u8, chunk.len());
+            map_page(page_table, USER_BASE + i * PAGE_SIZE, page, PAGE_U | PAGE_R | PAGE_W | PAGE_X);
         }
 
         proc.pid = i + 1;
@@ -345,12 +359,6 @@ fn create_process(pc: usize) -> usize {
 
 fn proc_sp(i: usize) -> *mut VAddr {
     unsafe { &raw mut PROCS[i].sp }
-}
-
-fn delay() {
-    for _ in 0..30_000_000 {
-        unsafe { asm!("nop") };
-    }
 }
 
 static CURRENT_PROC: AtomicUsize = AtomicUsize::new(0);
@@ -388,24 +396,6 @@ fn yield_now() {
     unsafe { switch_context(proc_sp(current), proc_sp(next)) };
 }
 
-extern "C" fn proc_a_entry() -> ! {
-    printf!("starting process A\n");
-    loop {
-        putchar(b'A');
-        yield_now();
-        delay();
-    }
-}
-
-extern "C" fn proc_b_entry() -> ! {
-    printf!("starting process B\n");
-    loop {
-        putchar(b'B');
-        yield_now();
-        delay();
-    }
-}
-
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
 #[unsafe(naked)]
@@ -426,13 +416,17 @@ extern "C" fn kernel_main() -> ! {
 
     write_csr!("stvec", (kernel_entry as *const ()).addr());
 
-    let idle = create_process(0);
+    let idle = create_process(&[]);
     unsafe { PROCS[idle].pid = 0 };
     IDLE_PROC.store(idle, Ordering::Relaxed);
     CURRENT_PROC.store(idle, Ordering::Relaxed);
 
-    create_process((proc_a_entry as *const ()).addr());
-    create_process((proc_b_entry as *const ()).addr());
+    let shell = unsafe {
+        let start = &raw const _binary_shell_bin_start;
+        let size = (&raw const _binary_shell_bin_size).addr();
+        core::slice::from_raw_parts(start, size)
+    };
+    create_process(shell);
 
     yield_now();
     panic!("switched to idle process");
