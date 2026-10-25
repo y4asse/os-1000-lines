@@ -315,9 +315,19 @@ unsafe fn map_page(table1: PAddr, vaddr: VAddr, paddr: PAddr, flags: u32) {
 }
 
 const USER_BASE: VAddr = 0x1000000;
+const SSTATUS_SPIE: usize = 1 << 5;
 
+#[unsafe(naked)]
 extern "C" fn user_entry() -> ! {
-    panic!("not yet implemented");
+    naked_asm!(
+        "li t0, {sepc}",
+        "csrw sepc, t0",
+        "li t0, {sstatus}",
+        "csrw sstatus, t0",
+        "sret",
+        sepc = const USER_BASE,
+        sstatus = const SSTATUS_SPIE,
+    );
 }
 
 fn create_process(image: &[u8]) -> usize {
