@@ -1,7 +1,7 @@
 use core::arch::{asm, naked_asm};
 use core::panic::PanicInfo;
 
-use crate::common::{SYS_GETCHAR, SYS_PUTCHAR};
+use crate::common::{SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR};
 
 fn syscall(sysno: usize, arg0: usize, arg1: usize, arg2: usize) -> isize {
     let ret;
@@ -27,6 +27,7 @@ pub fn getchar() -> isize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn exit() -> ! {
+    syscall(SYS_EXIT, 0, 0, 0);
     loop {}
 }
 

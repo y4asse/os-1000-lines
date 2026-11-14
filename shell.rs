@@ -5,7 +5,7 @@
 mod common;
 mod user;
 
-use user::{getchar, putchar};
+use user::{exit, getchar, putchar};
 
 #[unsafe(no_mangle)]
 extern "C" fn main() {
@@ -31,6 +31,8 @@ extern "C" fn main() {
         let cmd = &cmdline[..len];
         if cmd == b"hello" {
             printf!("Hello world from shell!\n");
+        } else if cmd == b"exit" {
+            exit();
         } else {
             printf!("unknown command: {}\n", core::str::from_utf8(cmd).unwrap_or("?"));
         }

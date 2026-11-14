@@ -24,7 +24,7 @@ use core::panic::PanicInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{PAGE_SIZE, PAddr, SYS_GETCHAR, SYS_PUTCHAR, VAddr, is_aligned};
+use common::{PAGE_SIZE, PAddr, SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR, VAddr, is_aligned};
 
 unsafe extern "C" {
     static _binary_shell_bin_start: u8;
@@ -238,6 +238,15 @@ fn handle_syscall(f: &mut TrapFrame) {
             }
             yield_now();
         },
+        SYS_EXIT => {
+            let current = CURRENT_PROC.load(Ordering::Relaxed);
+            unsafe {
+                printf!("process {} exited\n", PROCS[current].pid);
+                PROCS[current].state = ProcState::Exited;
+            }
+            yield_now();
+            panic!("unreachable");
+        }
         _ => panic!("unexpected syscall a3={:x}", f.a3),
     }
 }
@@ -249,6 +258,7 @@ const KERNEL_STACK_SIZE: usize = 8192;
 enum ProcState {
     Unused,
     Runnable,
+    Exited,
 }
 
 #[repr(align(16))]

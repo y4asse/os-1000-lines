@@ -25,6 +25,7 @@ pub const PAGE_SIZE: usize = 4096;
 
 pub const SYS_PUTCHAR: usize = 1;
 pub const SYS_GETCHAR: usize = 2;
+pub const SYS_EXIT: usize = 3;
 
 pub type PAddr = usize;
 pub type VAddr = usize;
