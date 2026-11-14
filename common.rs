@@ -23,6 +23,8 @@ macro_rules! printf {
 
 pub const PAGE_SIZE: usize = 4096;
 
+pub const SYS_PUTCHAR: usize = 1;
+
 pub type PAddr = usize;
 pub type VAddr = usize;
 

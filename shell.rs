@@ -9,5 +9,5 @@ use user::putchar;
 
 #[unsafe(no_mangle)]
 extern "C" fn main() {
-    loop {}
+    printf!("Hello World from shell!\n");
 }

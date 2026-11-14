@@ -24,7 +24,7 @@ use core::panic::PanicInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{PAGE_SIZE, PAddr, VAddr, is_aligned};
+use common::{PAGE_SIZE, PAddr, SYS_PUTCHAR, VAddr, is_aligned};
 
 unsafe extern "C" {
     static _binary_shell_bin_start: u8;
@@ -206,12 +206,28 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn handle_trap(_f: &mut TrapFrame) {
+extern "C" fn handle_trap(f: &mut TrapFrame) {
     let scause = read_csr!("scause");
     let stval = read_csr!("stval");
-    let user_pc = read_csr!("sepc");
+    let mut user_pc = read_csr!("sepc");
 
-    panic!("unexpected trap scause={:08x}, stval={:08x}, sepc={:08x}", scause, stval, user_pc);
+    if scause == SCAUSE_ECALL {
+        handle_syscall(f);
+        user_pc += 4;
+    } else {
+        panic!("unexpected trap scause={:08x}, stval={:08x}, sepc={:08x}", scause, stval, user_pc);
+    }
+
+    write_csr!("sepc", user_pc);
+}
+
+const SCAUSE_ECALL: usize = 8;
+
+fn handle_syscall(f: &mut TrapFrame) {
+    match f.a3 as usize {
+        SYS_PUTCHAR => putchar(f.a0 as u8),
+        _ => panic!("unexpected syscall a3={:x}", f.a3),
+    }
 }
 
 const PROCS_MAX: usize = 8;
