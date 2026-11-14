@@ -22,7 +22,8 @@ macro_rules! write_csr {
 use core::arch::{asm, global_asm, naked_asm};
 use core::panic::PanicInfo;
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::mem::offset_of;
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use common::{PAGE_SIZE, PAddr, SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR, VAddr, align_up, is_aligned};
 
@@ -334,11 +335,16 @@ const VIRTIO_REG_PAGE_SIZE: usize = 0x28;
 const VIRTIO_REG_QUEUE_SEL: usize = 0x30;
 const VIRTIO_REG_QUEUE_NUM: usize = 0x38;
 const VIRTIO_REG_QUEUE_PFN: usize = 0x40;
+const VIRTIO_REG_QUEUE_NOTIFY: usize = 0x50;
 const VIRTIO_REG_DEVICE_STATUS: usize = 0x70;
 const VIRTIO_REG_DEVICE_CONFIG: usize = 0x100;
 const VIRTIO_STATUS_ACK: u32 = 1;
 const VIRTIO_STATUS_DRIVER: u32 = 2;
 const VIRTIO_STATUS_DRIVER_OK: u32 = 4;
+const VIRTQ_DESC_F_NEXT: u16 = 1;
+const VIRTQ_DESC_F_WRITE: u16 = 2;
+const VIRTIO_BLK_T_IN: u32 = 0;
+const VIRTIO_BLK_T_OUT: u32 = 1;
 
 #[repr(C)]
 struct VirtqDesc {
@@ -440,6 +446,75 @@ fn virtio_blk_init() {
 
     let blk_req_paddr = alloc_pages(align_up(size_of::<VirtioBlkReq>(), PAGE_SIZE) / PAGE_SIZE);
     BLK_REQ_PADDR.store(blk_req_paddr, Ordering::Relaxed);
+}
+
+unsafe fn virtq_kick(vq: *mut VirtioVirtq, desc_index: u16) {
+    unsafe {
+        let avail_index = (*vq).avail.index;
+        (*vq).avail.ring[avail_index as usize % VIRTQ_ENTRY_NUM] = desc_index;
+        (*vq).avail.index = avail_index.wrapping_add(1);
+        fence(Ordering::SeqCst);
+        virtio_reg_write32(VIRTIO_REG_QUEUE_NOTIFY, (*vq).queue_index);
+        (*vq).last_used_index = (*vq).last_used_index.wrapping_add(1);
+    }
+}
+
+unsafe fn virtq_is_busy(vq: *mut VirtioVirtq) -> bool {
+    unsafe { (*vq).last_used_index != ptr::read_volatile(&raw const (*vq).used.index) }
+}
+
+fn read_write_disk(buf: &mut [u8; SECTOR_SIZE], sector: usize, is_write: bool) {
+    let capacity = BLK_CAPACITY.load(Ordering::Relaxed);
+    if sector >= capacity / SECTOR_SIZE {
+        printf!(
+            "virtio: tried to read/write sector={}, but capacity is {}\n",
+            sector,
+            capacity / SECTOR_SIZE
+        );
+        return;
+    }
+
+    let blk_req_paddr = BLK_REQ_PADDR.load(Ordering::Relaxed);
+    let blk_req = blk_req_paddr as *mut VirtioBlkReq;
+    let vq = BLK_REQUEST_VQ.load(Ordering::Relaxed) as *mut VirtioVirtq;
+    unsafe {
+        (*blk_req).sector = sector as u64;
+        (*blk_req).kind = if is_write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN };
+        if is_write {
+            (*blk_req).data = *buf;
+        }
+
+        (*vq).descs[0].addr = blk_req_paddr as u64;
+        (*vq).descs[0].len = (size_of::<u32>() * 2 + size_of::<u64>()) as u32;
+        (*vq).descs[0].flags = VIRTQ_DESC_F_NEXT;
+        (*vq).descs[0].next = 1;
+
+        (*vq).descs[1].addr = (blk_req_paddr + offset_of!(VirtioBlkReq, data)) as u64;
+        (*vq).descs[1].len = SECTOR_SIZE as u32;
+        (*vq).descs[1].flags = VIRTQ_DESC_F_NEXT | if is_write { 0 } else { VIRTQ_DESC_F_WRITE };
+        (*vq).descs[1].next = 2;
+
+        (*vq).descs[2].addr = (blk_req_paddr + offset_of!(VirtioBlkReq, status)) as u64;
+        (*vq).descs[2].len = size_of::<u8>() as u32;
+        (*vq).descs[2].flags = VIRTQ_DESC_F_WRITE;
+
+        virtq_kick(vq, 0);
+        while virtq_is_busy(vq) {}
+        fence(Ordering::SeqCst);
+
+        if (*blk_req).status != 0 {
+            printf!(
+                "virtio: warn: failed to read/write sector={} status={}\n",
+                sector,
+                (*blk_req).status
+            );
+            return;
+        }
+
+        if !is_write {
+            *buf = (*blk_req).data;
+        }
+    }
 }
 
 const SATP_SV32: usize = 1 << 31;
@@ -585,6 +660,14 @@ extern "C" fn kernel_main() -> ! {
     write_csr!("stvec", (kernel_entry as *const ()).addr());
 
     virtio_blk_init();
+
+    let mut buf = [0u8; SECTOR_SIZE];
+    read_write_disk(&mut buf, 0, false);
+    printf!("first sector: {}\n", core::str::from_utf8(&buf).unwrap_or("?"));
+
+    let msg = b"hello from kernel!!!\n";
+    buf[..msg.len()].copy_from_slice(msg);
+    read_write_disk(&mut buf, 0, true);
 
     let idle = create_process(&[]);
     unsafe { PROCS[idle].pid = 0 };
