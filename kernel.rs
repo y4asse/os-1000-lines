@@ -24,7 +24,7 @@ use core::panic::PanicInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{PAGE_SIZE, PAddr, SYS_PUTCHAR, VAddr, is_aligned};
+use common::{PAGE_SIZE, PAddr, SYS_GETCHAR, SYS_PUTCHAR, VAddr, is_aligned};
 
 unsafe extern "C" {
     static _binary_shell_bin_start: u8;
@@ -88,6 +88,10 @@ fn sbi_call(
 
 fn putchar(ch: u8) {
     sbi_call(ch as isize, 0, 0, 0, 0, 0, 0, 1);
+}
+
+fn getchar() -> isize {
+    sbi_call(0, 0, 0, 0, 0, 0, 0, 2).error
 }
 
 #[repr(C)]
@@ -226,6 +230,14 @@ const SCAUSE_ECALL: usize = 8;
 fn handle_syscall(f: &mut TrapFrame) {
     match f.a3 as usize {
         SYS_PUTCHAR => putchar(f.a0 as u8),
+        SYS_GETCHAR => loop {
+            let ch = getchar();
+            if ch >= 0 {
+                f.a0 = ch as u32;
+                break;
+            }
+            yield_now();
+        },
         _ => panic!("unexpected syscall a3={:x}", f.a3),
     }
 }

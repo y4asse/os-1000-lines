@@ -1,7 +1,7 @@
 use core::arch::{asm, naked_asm};
 use core::panic::PanicInfo;
 
-use crate::common::SYS_PUTCHAR;
+use crate::common::{SYS_GETCHAR, SYS_PUTCHAR};
 
 fn syscall(sysno: usize, arg0: usize, arg1: usize, arg2: usize) -> isize {
     let ret;
@@ -19,6 +19,10 @@ fn syscall(sysno: usize, arg0: usize, arg1: usize, arg2: usize) -> isize {
 
 pub fn putchar(ch: u8) {
     syscall(SYS_PUTCHAR, ch as usize, 0, 0);
+}
+
+pub fn getchar() -> isize {
+    syscall(SYS_GETCHAR, 0, 0, 0)
 }
 
 #[unsafe(no_mangle)]
