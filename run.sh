@@ -13,4 +13,8 @@ $OBJCOPY -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
 
 $RUSTC $RUSTFLAGS -C link-arg=-Tkernel.ld -C link-arg=-Map=kernel.map -C link-arg=shell.bin.o -o kernel.elf kernel.rs
 
-$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel kernel.elf
+$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -d unimp,guest_errors,int,cpu_reset -D qemu.log \
+    -drive id=drive0,file=lorem.txt,format=raw,if=none \
+    -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
+    -kernel kernel.elf

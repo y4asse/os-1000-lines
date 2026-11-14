@@ -24,7 +24,7 @@ use core::panic::PanicInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{PAGE_SIZE, PAddr, SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR, VAddr, is_aligned};
+use common::{PAGE_SIZE, PAddr, SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR, VAddr, align_up, is_aligned};
 
 unsafe extern "C" {
     static _binary_shell_bin_start: u8;
@@ -323,6 +323,125 @@ unsafe extern "C" fn switch_context(prev_sp: *mut VAddr, next_sp: *const VAddr) 
     );
 }
 
+const SECTOR_SIZE: usize = 512;
+const VIRTQ_ENTRY_NUM: usize = 16;
+const VIRTIO_DEVICE_BLK: u32 = 2;
+const VIRTIO_BLK_PADDR: PAddr = 0x10001000;
+const VIRTIO_REG_MAGIC: usize = 0x00;
+const VIRTIO_REG_VERSION: usize = 0x04;
+const VIRTIO_REG_DEVICE_ID: usize = 0x08;
+const VIRTIO_REG_PAGE_SIZE: usize = 0x28;
+const VIRTIO_REG_QUEUE_SEL: usize = 0x30;
+const VIRTIO_REG_QUEUE_NUM: usize = 0x38;
+const VIRTIO_REG_QUEUE_PFN: usize = 0x40;
+const VIRTIO_REG_DEVICE_STATUS: usize = 0x70;
+const VIRTIO_REG_DEVICE_CONFIG: usize = 0x100;
+const VIRTIO_STATUS_ACK: u32 = 1;
+const VIRTIO_STATUS_DRIVER: u32 = 2;
+const VIRTIO_STATUS_DRIVER_OK: u32 = 4;
+
+#[repr(C)]
+struct VirtqDesc {
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
+}
+
+#[repr(C)]
+struct VirtqAvail {
+    flags: u16,
+    index: u16,
+    ring: [u16; VIRTQ_ENTRY_NUM],
+}
+
+#[repr(C)]
+struct VirtqUsedElem {
+    id: u32,
+    len: u32,
+}
+
+#[repr(C, align(4096))]
+struct VirtqUsed {
+    flags: u16,
+    index: u16,
+    ring: [VirtqUsedElem; VIRTQ_ENTRY_NUM],
+}
+
+#[repr(C)]
+struct VirtioVirtq {
+    descs: [VirtqDesc; VIRTQ_ENTRY_NUM],
+    avail: VirtqAvail,
+    used: VirtqUsed,
+    queue_index: u32,
+    last_used_index: u16,
+}
+
+#[repr(C)]
+struct VirtioBlkReq {
+    kind: u32,
+    reserved: u32,
+    sector: u64,
+    data: [u8; SECTOR_SIZE],
+    status: u8,
+}
+
+fn virtio_reg_read32(offset: usize) -> u32 {
+    unsafe { ptr::read_volatile((VIRTIO_BLK_PADDR + offset) as *const u32) }
+}
+
+fn virtio_reg_read64(offset: usize) -> u64 {
+    unsafe { ptr::read_volatile((VIRTIO_BLK_PADDR + offset) as *const u64) }
+}
+
+fn virtio_reg_write32(offset: usize, value: u32) {
+    unsafe { ptr::write_volatile((VIRTIO_BLK_PADDR + offset) as *mut u32, value) }
+}
+
+fn virtio_reg_fetch_and_or32(offset: usize, value: u32) {
+    virtio_reg_write32(offset, virtio_reg_read32(offset) | value);
+}
+
+static BLK_REQUEST_VQ: AtomicUsize = AtomicUsize::new(0);
+static BLK_REQ_PADDR: AtomicUsize = AtomicUsize::new(0);
+static BLK_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+
+fn virtq_init(index: u32) -> PAddr {
+    let virtq_paddr = alloc_pages(align_up(size_of::<VirtioVirtq>(), PAGE_SIZE) / PAGE_SIZE);
+    let vq = virtq_paddr as *mut VirtioVirtq;
+    unsafe { (*vq).queue_index = index };
+    virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index);
+    virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_ENTRY_NUM as u32);
+    virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, (virtq_paddr / PAGE_SIZE) as u32);
+    virtq_paddr
+}
+
+fn virtio_blk_init() {
+    if virtio_reg_read32(VIRTIO_REG_MAGIC) != 0x74726976 {
+        panic!("virtio: invalid magic value");
+    }
+    if virtio_reg_read32(VIRTIO_REG_VERSION) != 1 {
+        panic!("virtio: invalid version");
+    }
+    if virtio_reg_read32(VIRTIO_REG_DEVICE_ID) != VIRTIO_DEVICE_BLK {
+        panic!("virtio: invalid device id");
+    }
+
+    virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, 0);
+    virtio_reg_fetch_and_or32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACK);
+    virtio_reg_fetch_and_or32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
+    virtio_reg_write32(VIRTIO_REG_PAGE_SIZE, PAGE_SIZE as u32);
+    BLK_REQUEST_VQ.store(virtq_init(0), Ordering::Relaxed);
+    virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
+
+    let capacity = virtio_reg_read64(VIRTIO_REG_DEVICE_CONFIG) as usize * SECTOR_SIZE;
+    BLK_CAPACITY.store(capacity, Ordering::Relaxed);
+    printf!("virtio-blk: capacity is {} bytes\n", capacity);
+
+    let blk_req_paddr = alloc_pages(align_up(size_of::<VirtioBlkReq>(), PAGE_SIZE) / PAGE_SIZE);
+    BLK_REQ_PADDR.store(blk_req_paddr, Ordering::Relaxed);
+}
+
 const SATP_SV32: usize = 1 << 31;
 const PAGE_V: u32 = 1 << 0; // 有効化ビット
 const PAGE_R: u32 = 1 << 1; // 読み込み可能
@@ -390,6 +509,7 @@ fn create_process(image: &[u8]) -> usize {
         for paddr in (kernel_base..free_ram_end).step_by(PAGE_SIZE) {
             map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
         }
+        map_page(page_table, VIRTIO_BLK_PADDR, VIRTIO_BLK_PADDR, PAGE_R | PAGE_W);
 
         for (i, chunk) in image.chunks(PAGE_SIZE).enumerate() {
             let page = alloc_pages(1);
@@ -463,6 +583,8 @@ extern "C" fn kernel_main() -> ! {
     }
 
     write_csr!("stvec", (kernel_entry as *const ()).addr());
+
+    virtio_blk_init();
 
     let idle = create_process(&[]);
     unsafe { PROCS[idle].pid = 0 };
