@@ -569,6 +569,13 @@ fn oct2int(oct: &[u8]) -> usize {
     dec
 }
 
+fn int2oct(dst: &mut [u8], mut value: usize) {
+    for c in dst.iter_mut().rev() {
+        *c = b'0' + (value % 8) as u8;
+        value /= 8;
+    }
+}
+
 fn cstr(bytes: &[u8]) -> &str {
     let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     core::str::from_utf8(&bytes[..len]).unwrap_or("?")
@@ -602,6 +609,39 @@ fn fs_init() {
 
         off += align_up(size_of::<TarHeader>() + filesz, SECTOR_SIZE);
     }
+}
+
+fn fs_flush() {
+    let disk = unsafe { &mut *(&raw mut DISK) };
+    let files = unsafe { &*(&raw const FILES) };
+
+    disk.fill(0);
+    let mut off = 0;
+    for file in files.iter().filter(|file| file.in_use) {
+        let header = unsafe { &mut *(disk.as_mut_ptr().add(off) as *mut TarHeader) };
+        header.name = file.name;
+        header.mode[..6].copy_from_slice(b"000644");
+        header.magic = *b"ustar\0";
+        header.version = *b"00";
+        header.kind = b'0';
+        int2oct(&mut header.size, file.size);
+
+        let header_bytes = unsafe {
+            core::slice::from_raw_parts((header as *const TarHeader).cast::<u8>(), size_of::<TarHeader>())
+        };
+        let checksum = b' ' as usize * header.checksum.len()
+            + header_bytes.iter().map(|&b| b as usize).sum::<usize>();
+        int2oct(&mut header.checksum[..6], checksum);
+
+        let data = off + size_of::<TarHeader>();
+        disk[data..data + file.size].copy_from_slice(&file.data[..file.size]);
+        off += align_up(size_of::<TarHeader>() + file.size, SECTOR_SIZE);
+    }
+
+    for (sector, chunk) in disk.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+        read_write_disk(chunk.try_into().unwrap(), sector, true);
+    }
+    printf!("wrote {} bytes to disk\n", disk.len());
 }
 
 const SATP_SV32: usize = 1 << 31;
@@ -748,6 +788,7 @@ extern "C" fn kernel_main() -> ! {
 
     virtio_blk_init();
     fs_init();
+    fs_flush();
 
     let idle = create_process(&[]);
     unsafe { PROCS[idle].pid = 0 };
