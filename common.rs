@@ -30,7 +30,7 @@ pub const SYS_EXIT: usize = 3;
 pub type PAddr = usize;
 pub type VAddr = usize;
 
-pub fn align_up(value: usize, align: usize) -> usize {
+pub const fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 

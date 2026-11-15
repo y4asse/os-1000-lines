@@ -517,6 +517,93 @@ fn read_write_disk(buf: &mut [u8; SECTOR_SIZE], sector: usize, is_write: bool) {
     }
 }
 
+const FILES_MAX: usize = 2;
+const DISK_MAX_SIZE: usize = align_up(size_of::<File>() * FILES_MAX, SECTOR_SIZE);
+
+#[repr(C)]
+struct TarHeader {
+    name: [u8; 100],
+    mode: [u8; 8],
+    uid: [u8; 8],
+    gid: [u8; 8],
+    size: [u8; 12],
+    mtime: [u8; 12],
+    checksum: [u8; 8],
+    kind: u8,
+    linkname: [u8; 100],
+    magic: [u8; 6],
+    version: [u8; 2],
+    uname: [u8; 32],
+    gname: [u8; 32],
+    devmajor: [u8; 8],
+    devminor: [u8; 8],
+    prefix: [u8; 155],
+    padding: [u8; 12],
+}
+
+struct File {
+    in_use: bool,
+    name: [u8; 100],
+    data: [u8; 1024],
+    size: usize,
+}
+
+static mut FILES: [File; FILES_MAX] = [const {
+    File {
+        in_use: false,
+        name: [0; 100],
+        data: [0; 1024],
+        size: 0,
+    }
+}; FILES_MAX];
+static mut DISK: [u8; DISK_MAX_SIZE] = [0; DISK_MAX_SIZE];
+
+fn oct2int(oct: &[u8]) -> usize {
+    let mut dec = 0;
+    for &c in oct {
+        if !(b'0'..=b'7').contains(&c) {
+            break;
+        }
+        dec = dec * 8 + (c - b'0') as usize;
+    }
+    dec
+}
+
+fn cstr(bytes: &[u8]) -> &str {
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    core::str::from_utf8(&bytes[..len]).unwrap_or("?")
+}
+
+fn fs_init() {
+    let disk = unsafe { &mut *(&raw mut DISK) };
+    let files = unsafe { &mut *(&raw mut FILES) };
+
+    for (sector, chunk) in disk.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+        read_write_disk(chunk.try_into().unwrap(), sector, false);
+    }
+
+    let mut off = 0;
+    for file in files.iter_mut() {
+        let header = unsafe { &*(disk.as_ptr().add(off) as *const TarHeader) };
+        if header.name[0] == 0 {
+            break;
+        }
+        if header.magic != *b"ustar\0" {
+            panic!("invalid tar header: magic=\"{}\"", cstr(&header.magic));
+        }
+
+        let filesz = oct2int(&header.size);
+        let data = off + size_of::<TarHeader>();
+        file.in_use = true;
+        file.name = header.name;
+        file.data[..filesz].copy_from_slice(&disk[data..data + filesz]);
+        file.size = filesz;
+        printf!("file: {}, size={}\n", cstr(&file.name), file.size);
+
+        off += align_up(size_of::<TarHeader>() + filesz, SECTOR_SIZE);
+    }
+}
+
 const SATP_SV32: usize = 1 << 31;
 const PAGE_V: u32 = 1 << 0; // 有効化ビット
 const PAGE_R: u32 = 1 << 1; // 読み込み可能
@@ -660,14 +747,7 @@ extern "C" fn kernel_main() -> ! {
     write_csr!("stvec", (kernel_entry as *const ()).addr());
 
     virtio_blk_init();
-
-    let mut buf = [0u8; SECTOR_SIZE];
-    read_write_disk(&mut buf, 0, false);
-    printf!("first sector: {}\n", core::str::from_utf8(&buf).unwrap_or("?"));
-
-    let msg = b"hello from kernel!!!\n";
-    buf[..msg.len()].copy_from_slice(msg);
-    read_write_disk(&mut buf, 0, true);
+    fs_init();
 
     let idle = create_process(&[]);
     unsafe { PROCS[idle].pid = 0 };
