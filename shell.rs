@@ -5,7 +5,7 @@
 mod common;
 mod user;
 
-use user::{exit, getchar, putchar};
+use user::{exit, getchar, putchar, readfile, writefile};
 
 #[unsafe(no_mangle)]
 extern "C" fn main() {
@@ -31,6 +31,14 @@ extern "C" fn main() {
         let cmd = &cmdline[..len];
         if cmd == b"hello" {
             printf!("Hello world from shell!\n");
+        } else if cmd == b"readfile" {
+            let mut buf = [0u8; 128];
+            let len = readfile(c"hello.txt", &mut buf);
+            if len >= 0 {
+                printf!("{}\n", core::str::from_utf8(&buf[..len as usize]).unwrap_or("?"));
+            }
+        } else if cmd == b"writefile" {
+            writefile(c"hello.txt", b"Hello from shell!\n");
         } else if cmd == b"exit" {
             exit();
         } else {

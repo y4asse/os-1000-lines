@@ -20,12 +20,16 @@ macro_rules! write_csr {
 }
 
 use core::arch::{asm, global_asm, naked_asm};
+use core::ffi::CStr;
 use core::panic::PanicInfo;
 use core::ptr;
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
-use common::{PAGE_SIZE, PAddr, SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR, VAddr, align_up, is_aligned};
+use common::{
+    PAGE_SIZE, PAddr, SYS_EXIT, SYS_GETCHAR, SYS_PUTCHAR, SYS_READFILE, SYS_WRITEFILE, VAddr, align_up,
+    is_aligned,
+};
 
 unsafe extern "C" {
     static _binary_shell_bin_start: u8;
@@ -247,6 +251,29 @@ fn handle_syscall(f: &mut TrapFrame) {
             }
             yield_now();
             panic!("unreachable");
+        }
+        SYS_READFILE | SYS_WRITEFILE => {
+            let filename = unsafe { CStr::from_ptr(f.a0 as usize as *const _) };
+            let buf = f.a1 as usize as *mut u8;
+            let len = f.a2 as usize;
+            let Some(file) = fs_lookup(filename) else {
+                printf!("file not found: {}\n", filename.to_str().unwrap_or("?"));
+                f.a0 = -1i32 as u32;
+                return;
+            };
+
+            let len = if f.a3 as usize == SYS_WRITEFILE {
+                let len = len.min(file.data.len());
+                file.data[..len].copy_from_slice(unsafe { core::slice::from_raw_parts(buf, len) });
+                file.size = len;
+                fs_flush();
+                len
+            } else {
+                let len = len.min(file.size);
+                unsafe { core::slice::from_raw_parts_mut(buf, len) }.copy_from_slice(&file.data[..len]);
+                len
+            };
+            f.a0 = len as u32;
         }
         _ => panic!("unexpected syscall a3={:x}", f.a3),
     }
@@ -611,6 +638,13 @@ fn fs_init() {
     }
 }
 
+fn fs_lookup(filename: &CStr) -> Option<&'static mut File> {
+    let files = unsafe { &mut *(&raw mut FILES) };
+    files.iter_mut().find(|file| {
+        file.in_use && CStr::from_bytes_until_nul(&file.name).is_ok_and(|name| name == filename)
+    })
+}
+
 fn fs_flush() {
     let disk = unsafe { &mut *(&raw mut DISK) };
     let files = unsafe { &*(&raw const FILES) };
@@ -675,6 +709,7 @@ unsafe fn map_page(table1: PAddr, vaddr: VAddr, paddr: PAddr, flags: u32) {
 
 const USER_BASE: VAddr = 0x1000000;
 const SSTATUS_SPIE: usize = 1 << 5;
+const SSTATUS_SUM: usize = 1 << 18;
 
 #[unsafe(naked)]
 extern "C" fn user_entry() -> ! {
@@ -685,7 +720,7 @@ extern "C" fn user_entry() -> ! {
         "csrw sstatus, t0",
         "sret",
         sepc = const USER_BASE,
-        sstatus = const SSTATUS_SPIE,
+        sstatus = const SSTATUS_SPIE | SSTATUS_SUM,
     );
 }
 
@@ -788,7 +823,6 @@ extern "C" fn kernel_main() -> ! {
 
     virtio_blk_init();
     fs_init();
-    fs_flush();
 
     let idle = create_process(&[]);
     unsafe { PROCS[idle].pid = 0 };
